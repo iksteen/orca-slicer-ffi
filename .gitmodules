@@ -1,0 +1,4 @@
+[submodule "external/OrcaSlicer"]
+	path = external/OrcaSlicer
+	url = https://github.com/OrcaSlicer/OrcaSlicer.git
+	branch = main
