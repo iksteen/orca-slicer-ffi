@@ -165,6 +165,25 @@ slic3r_status slic3r_model_load(slic3r_model_t* model,
                                  const char* path,
                                  char** out_err);
 
+/* Like slic3r_model_load, but also folds any printer/print/filament settings
+ * embedded in the file into `config`. Currently meaningful for .3mf (and
+ * .amf): the project's `Metadata/project_settings.config` is parsed and
+ * applied on top of `config`'s existing values. Settings the file doesn't
+ * mention are left untouched, so seeding `config` with FullPrintConfig
+ * defaults (via slic3r_config_new) and then calling this merges 3MF
+ * overrides on top.
+ *
+ * STL/OBJ/STEP files have no embedded config; for them this is identical
+ * to slic3r_model_load with respect to `config` (left unchanged).
+ *
+ * Forward-compatibility substitution is enabled silently — older 3MFs with
+ * renamed/removed option keys are accepted, with substitutions applied
+ * without throwing. */
+slic3r_status slic3r_model_load_with_config(slic3r_model_t* model,
+                                             slic3r_config_t* config,
+                                             const char* path,
+                                             char** out_err);
+
 /* ---- Slicing ---- */
 
 /* Slice model with config and write G-code to out_gcode_path.

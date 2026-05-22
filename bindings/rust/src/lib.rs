@@ -368,6 +368,24 @@ impl Model {
         let status = unsafe { sys::slic3r_model_load(self.raw, p.as_ptr(), &mut err) };
         unsafe { check_with_err(status, err) }
     }
+
+    /// Load a model file and fold any settings embedded in the file into
+    /// `config`. For 3MFs, picks up the printer/print/filament settings
+    /// stored in `Metadata/project_settings.config`. Pre-existing values in
+    /// `config` are preserved unless overridden by the file.
+    ///
+    /// For STL/OBJ/STEP files (which carry no embedded config) this is
+    /// equivalent to [`Model::load`] and leaves `config` untouched.
+    pub fn load_with_config<P: AsRef<Path>>(&mut self, path: P, config: &mut Config) -> Result<()> {
+        let p = CString::new(path.as_ref().to_string_lossy().as_bytes())
+            .map_err(|_| Error { kind: ErrorKind::InvalidArg, message: Some("path has NUL".into()) })?;
+        let mut err: *mut c_char = ptr::null_mut();
+        // SAFETY: handles are valid; p lives through the call; err is an out-param we own on non-null return.
+        let status = unsafe {
+            sys::slic3r_model_load_with_config(self.raw, config.raw, p.as_ptr(), &mut err)
+        };
+        unsafe { check_with_err(status, err) }
+    }
 }
 
 impl Drop for Model {

@@ -28,13 +28,13 @@ fn main() {
     init(resources.as_deref(), 3).expect("init failed");
 
     let mut model = Model::new().expect("model alloc");
-    model.load(&model_path).expect("model load");
-
-    let config = Config::new().expect("config alloc");
-    // Defaults from FullPrintConfig are already populated. If you want to
-    // override anything:
+    let mut config = Config::new().expect("config alloc");
+    // load_with_config seeds the config from the file's embedded settings
+    // when present (3MF carries a full printer profile). STL/OBJ/STEP have
+    // no embedded config and slice against FullPrintConfig defaults.
+    model.load_with_config(&model_path, &mut config).expect("model load");
+    // Override anything afterwards if needed:
     //   config.set("layer_height", "0.2")?;
-    //   config.set("nozzle_diameter", "0.4,0.4")?;
 
     println!("slicing {} -> {}", model_path.display(), out_path.display());
     match slice(&model, &config, &out_path) {

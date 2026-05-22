@@ -324,7 +324,14 @@ void slic3r_model_free(slic3r_model_t* model) {
     delete model;
 }
 
-slic3r_status slic3r_model_load(slic3r_model_t* m, const char* path, char** out_err) {
+namespace {
+
+// Shared body of slic3r_model_load and slic3r_model_load_with_config.
+// `cfg` may be null when the caller doesn't want the embedded config.
+slic3r_status do_load(slic3r_model_t* m,
+                      DynamicPrintConfig* cfg,
+                      const char* path,
+                      char** out_err) {
     if (!m || !path) return SLIC3R_ERR_INVALID_ARG;
     if (out_err) *out_err = nullptr;
     try {
@@ -337,12 +344,30 @@ slic3r_status slic3r_model_load(slic3r_model_t* m, const char* path, char** out_
         const auto opts = LoadStrategy::LoadModel
                         | LoadStrategy::LoadConfig
                         | LoadStrategy::AddDefaultInstances;
-        m->model = Model::read_from_file(path, nullptr, nullptr, opts);
+        // Silent forward-compat: older 3MFs with renamed keys are accepted.
+        // Substitution warnings are dropped on the floor for v0; a future
+        // API could surface them.
+        ConfigSubstitutionContext ctx(ForwardCompatibilitySubstitutionRule::EnableSilent);
+        m->model = Model::read_from_file(path, cfg, &ctx, opts);
         return SLIC3R_OK;
     } catch (const std::exception& e) {
         set_err(out_err, e.what());
         return SLIC3R_ERR_IO;
     }
+}
+
+} // namespace
+
+slic3r_status slic3r_model_load(slic3r_model_t* m, const char* path, char** out_err) {
+    return do_load(m, nullptr, path, out_err);
+}
+
+slic3r_status slic3r_model_load_with_config(slic3r_model_t* m,
+                                             slic3r_config_t* c,
+                                             const char* path,
+                                             char** out_err) {
+    if (!c) return SLIC3R_ERR_INVALID_ARG;
+    return do_load(m, &c->cfg, path, out_err);
 }
 
 // ---- Slicing ----
@@ -356,6 +381,21 @@ slic3r_status slic3r_slice(slic3r_model_t* model,
     try {
         Print print;
         print.apply(model->model, config->cfg);
+
+        // NOTE: Print::is_BBL_printer() is a manually-set flag (Print.hpp:
+        // 1143, declared without an initializer; defaults to whatever
+        // uninitialized stack memory holds). Upstream sets it true for Bambu
+        // printers to silence validators that don't understand Bambu's
+        // relative-extrusion + no-G92-per-layer convention.
+        //
+        // We deliberately leave it at its default (effectively false) because
+        // setting it true unmasks a libslic3r off-by-one in
+        // ToolOrdering::check_filament_printable_after_group when multi-
+        // filament BBL prints are sliced headlessly. As a result, Bambu
+        // configs with use_relative_e_distances=1 and gcode_flavor=marlin
+        // hit a "Relative extruder addressing requires G92 E0 in
+        // layer_gcode" validation error here. This is tracked as a known
+        // limitation; the proper fix is upstream libslic3r work.
 
         StringObjectException err = print.validate();
         if (!err.string.empty()) {
