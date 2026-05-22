@@ -379,23 +379,64 @@ slic3r_status slic3r_slice(slic3r_model_t* model,
     if (!model || !config || !out_path) return SLIC3R_ERR_INVALID_ARG;
     if (out_err) *out_err = nullptr;
     try {
-        Print print;
-        print.apply(model->model, config->cfg);
-
-        // NOTE: Print::is_BBL_printer() is a manually-set flag (Print.hpp:
-        // 1143, declared without an initializer; defaults to whatever
-        // uninitialized stack memory holds). Upstream sets it true for Bambu
-        // printers to silence validators that don't understand Bambu's
-        // relative-extrusion + no-G92-per-layer convention.
+        // Several config fields must be normalized to the printer's geometry
+        // before slicing — chiefly that filament_map has one entry per
+        // filament, and that nozzle_volume_type has one entry per extruder.
+        // Upstream's CLI does this between loading and apply()
+        // (OrcaSlicer.cpp:5953-5964). Without it, ToolOrdering sees an
+        // undersized filament_map, produces degenerate per-layer extruder
+        // assignments (sentinel (unsigned)-1 entries), and process() crashes
+        // in check_filament_printable_after_group / calc_filament_change_
+        // info_by_toolorder when it dereferences those sentinels.
         //
-        // We deliberately leave it at its default (effectively false) because
-        // setting it true unmasks a libslic3r off-by-one in
-        // ToolOrdering::check_filament_printable_after_group when multi-
-        // filament BBL prints are sliced headlessly. As a result, Bambu
-        // configs with use_relative_e_distances=1 and gcode_flavor=marlin
-        // hit a "Relative extruder addressing requires G92 E0 in
-        // layer_gcode" validation error here. This is tracked as a known
-        // limitation; the proper fix is upstream libslic3r work.
+        // Apply the same normalization to a temporary copy so we don't
+        // mutate the caller's config.
+        DynamicPrintConfig cfg = config->cfg;
+        const size_t extruder_count = cfg.has("nozzle_diameter")
+            ? cfg.option<ConfigOptionFloats>("nozzle_diameter")->values.size()
+            : 1;
+        const size_t filament_count = cfg.has("filament_diameter")
+            ? cfg.option<ConfigOptionFloats>("filament_diameter")->values.size()
+            : 1;
+
+        auto& filament_map = cfg.option<ConfigOptionInts>("filament_map", true)->values;
+        if (filament_map.size() < filament_count)
+            filament_map.resize(filament_count, 1);
+        if (extruder_count == 1) {
+            // Force all filaments onto the single extruder. Matches
+            // OrcaSlicer.cpp:5957-5960.
+            for (size_t i = 0; i < filament_count; ++i)
+                filament_map[i] = 1;
+        }
+
+        if (!cfg.has("nozzle_volume_type"))
+            cfg.option<ConfigOptionEnumsGeneric>("nozzle_volume_type", true)
+                ->values.resize(extruder_count, nvtStandard);
+
+        // Per-region filament selectors carry "0 = use default" in 3MF
+        // configs, but the headless slicing entry calls ToolOrdering with
+        // first_extruder == -1, and handle_dontcare_extruder(-1) only
+        // promotes zeros if it can find any non-zero extruder in the layer
+        // tools — which it can't, because they're all zero. The sentinel
+        // leaks through and crashes tool ordering downstream. Coerce
+        // each zero to 1 so PrintRegion picks up a real filament index.
+        for (const char* key : {"wall_filament", "sparse_infill_filament",
+                                "solid_infill_filament", "support_filament",
+                                "support_interface_filament"}) {
+            if (auto* opt = cfg.option<ConfigOptionInt>(key); opt && opt->value == 0)
+                opt->value = 1;
+        }
+
+        Print print;
+        print.apply(model->model, cfg);
+
+        // Print::is_BBL_printer() is a manually-set flag (Print.hpp:1143,
+        // declared without an initializer). The GUI sets it from the active
+        // preset bundle; the CLI checks the printer_model prefix. Without
+        // it, validators that know Bambu printers don't follow Marlin's
+        // relative-E + per-layer-G92 convention take the wrong branch.
+        const std::string printer_model = cfg.opt_string("printer_model");
+        print.is_BBL_printer() = (printer_model.compare(0, 9, "Bambu Lab") == 0);
 
         StringObjectException err = print.validate();
         if (!err.string.empty()) {
