@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -196,6 +197,14 @@ slic3r_status slic3r_init(const char* resources_dir, unsigned int log_level) {
             Slic3r::set_var_dir(std::string(resources_dir) + "/images");
         }
 
+        // libslic3r writes a working-copy backup of every loaded 3MF into
+        // temporary_dir(); the unset default resolves to "/orcaslicer_model"
+        // (filesystem root), which is not writable for non-root users and
+        // causes 3MF loads to silently produce an empty Model. Upstream's
+        // CLI sets this via wxFileName::GetTempDir(); we use the C++17
+        // equivalent so the shim has no wx dependency.
+        Slic3r::set_temporary_dir(std::filesystem::temp_directory_path().string());
+
         g_def_cache = std::make_unique<DefCache>();
         g_def_cache->build();
         g_initialized = true;
@@ -319,9 +328,16 @@ slic3r_status slic3r_model_load(slic3r_model_t* m, const char* path, char** out_
     if (!m || !path) return SLIC3R_ERR_INVALID_ARG;
     if (out_err) *out_err = nullptr;
     try {
-        // Default load strategy: add one instance per object at origin so a
-        // freshly-loaded STL is sliceable without further positioning.
-        m->model = Model::read_from_file(path);
+        // LoadModel is required for the BBS 3MF importer to actually attach
+        // parsed objects to the model (otherwise it deletes them — see
+        // bbs_3mf.cpp:_handle_end_object). LoadConfig pulls plate / object
+        // config out of the 3MF's Metadata/ tree when present. STL/OBJ/STEP
+        // loaders ignore the flags but accept them harmlessly, so we always
+        // pass this set rather than branching on extension.
+        const auto opts = LoadStrategy::LoadModel
+                        | LoadStrategy::LoadConfig
+                        | LoadStrategy::AddDefaultInstances;
+        m->model = Model::read_from_file(path, nullptr, nullptr, opts);
         return SLIC3R_OK;
     } catch (const std::exception& e) {
         set_err(out_err, e.what());
